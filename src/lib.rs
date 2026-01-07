@@ -9,16 +9,86 @@ use std::{
     },
 };
 use wry::{
+    dpi::{LogicalPosition, LogicalSize},
     http::{Request, Response},
-    WebContext, WebView, WebViewBuilder,
+    Rect, WebContext, WebView, WebViewBuilder,
 };
 
 use crossbeam::channel::{unbounded, Receiver};
+
+// raw-window-handle 0.5 (what baseview provides)
+use raw_window_handle_05 as rwh05;
+// raw-window-handle 0.6 (what wry expects)
+use raw_window_handle as rwh06;
 
 pub use wry::http;
 
 pub use baseview::{DropData, DropEffect, EventStatus, MouseEvent};
 pub use keyboard_types::*;
+
+/// Bridge between raw-window-handle 0.5 (baseview) and 0.6 (wry)
+struct Rwh06Wrapper<'a> {
+    window: &'a baseview::Window<'a>,
+}
+
+impl<'a> rwh06::HasWindowHandle for Rwh06Wrapper<'a> {
+    fn window_handle(&self) -> Result<rwh06::WindowHandle<'_>, rwh06::HandleError> {
+        use rwh05::HasRawWindowHandle;
+        let raw = self.window.raw_window_handle();
+
+        // Convert rwh 0.5 handle to rwh 0.6 handle
+        let handle = match raw {
+            #[cfg(target_os = "macos")]
+            rwh05::RawWindowHandle::AppKit(h) => {
+                let new_handle = rwh06::AppKitWindowHandle::new(
+                    std::ptr::NonNull::new(h.ns_view as *mut _).expect("NSView pointer is null")
+                );
+                rwh06::RawWindowHandle::AppKit(new_handle)
+            }
+            #[cfg(target_os = "windows")]
+            rwh05::RawWindowHandle::Win32(h) => {
+                let mut new_handle = rwh06::Win32WindowHandle::new(
+                    std::num::NonZeroIsize::new(h.hwnd as isize).expect("HWND is null")
+                );
+                new_handle.hinstance = std::num::NonZeroIsize::new(h.hinstance as isize);
+                rwh06::RawWindowHandle::Win32(new_handle)
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            rwh05::RawWindowHandle::Xlib(h) => {
+                let new_handle = rwh06::XlibWindowHandle::new(h.window);
+                rwh06::RawWindowHandle::Xlib(new_handle)
+            }
+            _ => panic!("Unsupported platform"),
+        };
+
+        Ok(unsafe { rwh06::WindowHandle::borrow_raw(handle) })
+    }
+}
+
+impl<'a> rwh06::HasDisplayHandle for Rwh06Wrapper<'a> {
+    fn display_handle(&self) -> Result<rwh06::DisplayHandle<'_>, rwh06::HandleError> {
+        use rwh05::HasRawDisplayHandle;
+        let raw = self.window.raw_display_handle();
+
+        let handle = match raw {
+            #[cfg(target_os = "macos")]
+            rwh05::RawDisplayHandle::AppKit(_) => rwh06::RawDisplayHandle::AppKit(rwh06::AppKitDisplayHandle::new()),
+            #[cfg(target_os = "windows")]
+            rwh05::RawDisplayHandle::Windows(_) => rwh06::RawDisplayHandle::Windows(rwh06::WindowsDisplayHandle::new()),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            rwh05::RawDisplayHandle::Xlib(h) => {
+                let new_handle = rwh06::XlibDisplayHandle::new(
+                    std::ptr::NonNull::new(h.display),
+                    h.screen
+                );
+                rwh06::RawDisplayHandle::Xlib(new_handle)
+            }
+            _ => panic!("Unsupported platform"),
+        };
+
+        Ok(unsafe { rwh06::DisplayHandle::borrow_raw(handle) })
+    }
+}
 
 type EventLoopHandler = dyn Fn(&WindowHandler, ParamSetter, &mut Window) + Send + Sync;
 type KeyboardHandler = dyn Fn(KeyboardEvent) -> bool + Send + Sync;
@@ -119,11 +189,9 @@ pub struct WindowHandler {
 
 impl WindowHandler {
     pub fn resize(&self, window: &mut baseview::Window, width: u32, height: u32) {
-        self.webview.set_bounds(wry::Rect {
-            x: 0,
-            y: 0,
-            width,
-            height,
+        let _ = self.webview.set_bounds(Rect {
+            position: LogicalPosition::new(0, 0).into(),
+            size: LogicalSize::new(width, height).into(),
         });
         self.width.store(width, Ordering::Relaxed);
         self.height.store(height, Ordering::Relaxed);
@@ -211,19 +279,19 @@ impl Editor for WebViewEditor {
 
             let mut web_context = WebContext::new(Some(std::env::temp_dir()));
 
-            let mut webview_builder = WebViewBuilder::new_as_child(window)
-                .with_bounds(wry::Rect {
-                    x: 0,
-                    y: 0,
-                    width: width.load(Ordering::Relaxed) as u32,
-                    height: height.load(Ordering::Relaxed) as u32,
+            let w = width.load(Ordering::Relaxed);
+            let h = height.load(Ordering::Relaxed);
+            let mut webview_builder = WebViewBuilder::new_with_web_context(&mut web_context)
+                .with_bounds(Rect {
+                    position: LogicalPosition::new(0, 0).into(),
+                    size: LogicalSize::new(w, h).into(),
                 })
                 .with_accept_first_mouse(true)
                 .with_devtools(developer_mode)
-                .with_web_context(&mut web_context)
                 .with_initialization_script(include_str!("script.js"))
-                .with_ipc_handler(move |msg: String| {
-                    if let Ok(json_value) = serde_json::from_str(&msg) {
+                .with_ipc_handler(move |request| {
+                    let msg = request.body();
+                    if let Ok(json_value) = serde_json::from_str(msg) {
                         let _ = events_sender.send(json_value);
                     } else {
                         panic!("Invalid JSON from web view: {}.", msg);
@@ -234,22 +302,26 @@ impl Editor for WebViewEditor {
             if let Some(custom_protocol) = custom_protocol.as_ref() {
                 let handler = custom_protocol.1.clone();
                 webview_builder = webview_builder
-                    .with_custom_protocol(custom_protocol.0.to_owned(), move |request| {
-                        handler(&request).unwrap()
+                    .with_asynchronous_custom_protocol(custom_protocol.0.to_owned(), move |_webview_id, request, responder| {
+                        let response = handler(&request).unwrap();
+                        responder.respond(response);
                     });
             }
 
-            let webview = match source.as_ref() {
+            let webview_builder = match source.as_ref() {
                 HTMLSource::String(html_str) => webview_builder.with_html(*html_str),
                 HTMLSource::URL(url) => webview_builder.with_url(*url),
-            }
-            .unwrap()
-            .build();
+            };
+            // Wrap window to bridge rwh 0.5 -> 0.6
+            let window_wrapper = Rwh06Wrapper { window };
+            let webview = webview_builder
+                .build_as_child(&window_wrapper)
+                .unwrap_or_else(|e| panic!("Failed to construct webview. {}", e));
 
             WindowHandler {
                 context,
                 event_loop_handler,
-                webview: webview.unwrap_or_else(|e| panic!("Failed to construct webview. {}", e)),
+                webview,
                 events_receiver,
                 keyboard_handler,
                 mouse_handler,

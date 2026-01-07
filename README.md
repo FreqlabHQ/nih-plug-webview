@@ -1,27 +1,49 @@
-# nih-plug-webview
+# nih-plug-webview (freqlab fork)
 
-**Warning: work in progress, not production-ready yet.**
-Experimental webview editor for [nih-plug](https://github.com/robbert-vdh/nih-plug) using [wry](https://github.com/tauri-apps/wry).
-Built on top of [baseview](https://github.com/RustAudio/baseview).
+Fork of [nih-plug-webview](https://github.com/httnn/nih-plug-webview) with patches for **Tauri app compatibility** and **hot reload support**.
 
-## Current status
+## Why this fork?
 
-I've only been able to test this on macOS so far on which it has been working quite robustly.
-Now that wry officially supports attaching to an existing window handle, I'm hoping that Windows also works but this needs to be verified.
+When loading webview-based CLAP/VST3 plugins inside a Tauri application (like [freqlab](https://github.com/jamesontucker/freqlab)), both the host app and the plugin use [wry](https://github.com/tauri-apps/wry) for WebView rendering. This causes Objective-C class name conflicts on macOS because both try to register the same class names (e.g., `WryWebView`).
 
-On macOS there is an unresolved issue where pressing the escape key in Ableton Live will lead to a crash.
-I've reported this to Ableton, and I'm currently mitigating this by consuming the escape keypress behind the scenes.
+This fork solves that by:
 
-## Features
-- send arbitrary JSON values back and forth to the webview using Serde
-- resizable plug-in window
-- drag and drop files with full paths
-- callback for deciding which key events from DAW to consume 
-- customisable background color for when the view is still loading (avoid initial flash of white)
-- use devtools
+1. **Prefixed class names** - All wry Objective-C classes use `NihPlugWry*` prefix (e.g., `NihPlugWryWebView_12345678`)
+2. **Dynamic class suffix** - Each build gets a unique suffix via `WRY_BUILD_SUFFIX` env var, enabling hot reload
+3. **Plugin host fixes** - Graceful handling when NSView isn't attached to a window yet
+4. **Updated to wry 0.53.5** - Matches Tauri 2.x's wry version
+
+## Hot Reload Support
+
+For hot reload to work, set `WRY_BUILD_SUFFIX` to a unique value before each build:
+
+```rust
+// In your build script or xtask
+let timestamp = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap()
+    .as_millis();
+std::env::set_var("WRY_BUILD_SUFFIX", format!("{}", timestamp % 100_000_000));
+```
+
+This ensures each plugin build registers unique class names, preventing conflicts during hot reload.
 
 ## Usage
 
-[Check out the example.](https://github.com/maxjvh/nih-plug-webview/blob/main/example/src/)
+```toml
+[dependencies]
+nih_plug_webview = { git = "https://github.com/jamesontucker/nih-plug-webview" }
+```
 
-Build the example with `cargo xtask bundle gain` in the `example` folder.
+## Features
+
+- Send arbitrary JSON values to/from the webview using Serde
+- Resizable plugin window
+- Drag and drop files with full paths
+- Callback for filtering key events from DAW
+- Customizable background color
+- DevTools support
+
+## Original
+
+Based on [httnn/nih-plug-webview](https://github.com/httnn/nih-plug-webview) by Max Huttunen.

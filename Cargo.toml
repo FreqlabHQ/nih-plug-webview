@@ -1,24 +1,25 @@
 [package]
 name = "nih_plug_webview"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
-authors = ["Max Huttunen <max.huttunen@gmail.com>"]
+authors = ["Max Huttunen <max.huttunen@gmail.com>", "Jameson Tucker"]
 license = "ISC"
+repository = "https://github.com/jamesontucker/nih-plug-webview"
 
-description = "An adapter to use webview GUIs with NIH-plug"
-
-[workspace]
-members = [
-  "example",
-  "xtask"
-]
+description = "An adapter to use webview GUIs with NIH-plug (freqlab fork with Tauri compatibility)"
 
 [dependencies]
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec" }
 parking_lot = "0.12.1"
 serde_json = "1.0"
-wry = { version = "0.35.1" }
+# Embedded patched wry with:
+# - Prefixed class names (NihPlugWry*) to avoid conflicts with Tauri's wry
+# - Dynamic class suffix for hot reload support (via WRY_BUILD_SUFFIX env var)
+# - Fixes for plugin host environments (window().unwrap() -> graceful handling)
+wry = { path = "./wry" }
 baseview = { git = "https://github.com/RustAudio/baseview" }
-raw-window-handle = "0.5"
+# Bridge between raw-window-handle 0.5 (baseview) and 0.6 (wry)
+raw-window-handle-05 = { package = "raw-window-handle", version = "0.5" }
+raw-window-handle = "0.6"
 crossbeam = "0.8.2"
 keyboard-types = "0.6.2"
