@@ -17,7 +17,7 @@ serde_json = "1.0"
 # - Dynamic class suffix for hot reload support (via WRY_BUILD_SUFFIX env var)
 # - Fixes for plugin host environments (window().unwrap() -> graceful handling)
 wry = { path = "./wry" }
-baseview = { git = "https://github.com/RustAudio/baseview" }
+baseview = { git = "https://github.com/RustAudio/baseview", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3" }
 # Bridge between raw-window-handle 0.5 (baseview) and 0.6 (wry)
 raw-window-handle-05 = { package = "raw-window-handle", version = "0.5" }
 raw-window-handle = "0.6"
