@@ -206,9 +206,13 @@ impl WindowHandler {
         let json_str = json.to_string();
         let json_str_quoted =
             serde_json::to_string(&json_str).expect("Should not fail: the value is always string");
-        self.webview
+        // (a failure here must not take the host down with it)
+        if let Err(e) = self
+            .webview
             .evaluate_script(&format!("onPluginMessageInternal({});", json_str_quoted))
-            .unwrap();
+        {
+            nih_plug::nih_log!("Couldn't send a message to the web view: {}", e);
+        }
     }
 
     pub fn next_event(&self) -> Result<Value, crossbeam::channel::TryRecvError> {
@@ -291,10 +295,12 @@ impl Editor for WebViewEditor {
                 .with_initialization_script(include_str!("script.js"))
                 .with_ipc_handler(move |request| {
                     let msg = request.body();
-                    if let Ok(json_value) = serde_json::from_str(msg) {
-                        let _ = events_sender.send(json_value);
-                    } else {
-                        panic!("Invalid JSON from web view: {}.", msg);
+                    match serde_json::from_str(msg) {
+                        Ok(json_value) => {
+                            let _ = events_sender.send(json_value);
+                        }
+                        // (the page's mistake: ignored, never a crash in the host)
+                        Err(e) => nih_plug::nih_log!("Ignored a message from the web view that isn't JSON ({}): {}", e, msg),
                     }
                 })
                 .with_background_color(background_color);
@@ -303,8 +309,15 @@ impl Editor for WebViewEditor {
                 let handler = custom_protocol.1.clone();
                 webview_builder = webview_builder
                     .with_asynchronous_custom_protocol(custom_protocol.0.to_owned(), move |_webview_id, request, responder| {
-                        let response = handler(&request).unwrap();
-                        responder.respond(response);
+                        match handler(&request) {
+                            Ok(response) => responder.respond(response),
+                            Err(e) => {
+                                nih_plug::nih_log!("Custom protocol request failed: {}", e);
+                                let mut response = Response::new(Cow::Borrowed(&[][..]));
+                                *response.status_mut() = http::StatusCode::INTERNAL_SERVER_ERROR;
+                                responder.respond(response);
+                            }
+                        }
                     });
             }
 
