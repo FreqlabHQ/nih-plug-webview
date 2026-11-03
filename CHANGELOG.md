@@ -1,3 +1,9 @@
+# 2026-11-02
+- `WebViewEditor::with_close_handler()`: called with a `ParamSetter` when the host closes the editor (while the
+  plugin is still alive), e.g. to end a parameter gesture a drag left open
+- a web view that can't be created (Windows without the WebView2 Runtime) no longer panics in the host: the window
+  says what to install on Windows, and `send_json()` / `resize()` do nothing without a web view
+
 # 2024-09-10
 - `WindowHandler::send_json()` doesn't return a `Result` anymore
 
