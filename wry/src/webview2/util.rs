@@ -148,7 +148,8 @@ pub fn wait_with_pump<T>(
       if woke == WAIT_FAILED {
         std::thread::sleep(std::time::Duration::from_millis(1));
       }
-      while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+      // (one message a pass, so the result and the deadline are checked between each, even in a flood)
+      if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
         if msg.message == WM_QUIT {
           // (the host's own quit: put back for its loop to see)
           PostQuitMessage(msg.wParam.0 as i32);
