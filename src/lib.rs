@@ -97,10 +97,11 @@ type CustomProtocolHandler =
     dyn Fn(&Request<Vec<u8>>) -> wry::Result<Response<Cow<'static, [u8]>>> + Send + Sync;
 type CloseHandler = dyn Fn(ParamSetter) + Send + Sync;
 
-/// Shown in the editor instead of the UI when the web view can't be created (Windows: no WebView2)
+/// Shown in the editor instead of the UI when the web view can't be created (Windows: most often no WebView2)
 #[cfg(target_os = "windows")]
-const WEBVIEW_MISSING: &str = "This plugin's window needs the Microsoft Edge WebView2 Runtime, a free download \
-from Microsoft. Install it, then reopen this window. The plugin's sound keeps working.";
+const WEBVIEW_MISSING: &str = "This plugin's window couldn't open. It needs the Microsoft Edge WebView2 Runtime, a \
+free download from Microsoft: if it isn't installed, install it, then reopen this window. The plugin's sound keeps \
+working.";
 
 pub struct WebViewEditor {
     source: Arc<HTMLSource>,

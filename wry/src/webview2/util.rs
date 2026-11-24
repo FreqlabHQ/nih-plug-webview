@@ -99,3 +99,54 @@ pub unsafe fn hwnd_dpi(hwnd: HWND) -> u32 {
     }
   }
 }
+
+/// How long a WebView2 call may take to answer before it's treated as failed.
+pub const CREATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Pumps this thread's messages until `rx` has a result, like `webview2_com::wait_with_pump`, but stops when the
+/// sender is gone (a callback that ended without sending) or after `timeout`, rather than waiting forever: in a
+/// plugin, a wait that never ends freezes the host.
+pub fn wait_with_pump<T>(
+  rx: std::sync::mpsc::Receiver<T>,
+  timeout: std::time::Duration,
+) -> windows::core::Result<T> {
+  use std::sync::mpsc::TryRecvError;
+  use windows::Win32::{
+    Foundation::{E_ABORT, ERROR_TIMEOUT},
+    UI::WindowsAndMessaging::{
+      DispatchMessageA, MsgWaitForMultipleObjects, PeekMessageA, PostQuitMessage,
+      TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
+    },
+  };
+
+  let deadline = std::time::Instant::now() + timeout;
+  let mut msg = MSG::default();
+  loop {
+    match rx.try_recv() {
+      Ok(result) => return Ok(result),
+      Err(TryRecvError::Disconnected) => return Err(E_ABORT.into()),
+      Err(TryRecvError::Empty) => {}
+    }
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    if left.is_zero() {
+      return Err(ERROR_TIMEOUT.to_hresult().into());
+    }
+    unsafe {
+      MsgWaitForMultipleObjects(
+        None,
+        false,
+        left.as_millis().min(u32::MAX as u128) as u32,
+        QS_ALLINPUT,
+      );
+      while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+        if msg.message == WM_QUIT {
+          // (the host's own quit: put back for its loop to see)
+          PostQuitMessage(msg.wParam.0 as i32);
+          return Err(E_ABORT.into());
+        }
+        let _ = TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+      }
+    }
+  }
+}

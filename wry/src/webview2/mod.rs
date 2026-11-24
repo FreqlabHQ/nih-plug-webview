@@ -349,15 +349,17 @@ impl InnerWebView {
         // by manually creating the callback handler and use webview2_com::with_with_bump
         &CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
           move |error_code, environment| {
-            error_code?;
-            tx.send(environment.ok_or_else(|| windows::core::Error::from(E_POINTER)))
+            // (an error is sent too: returning it instead would leave the wait below with nothing)
+            let environment = error_code
+              .and_then(|()| environment.ok_or_else(|| windows::core::Error::from(E_POINTER)));
+            tx.send(environment)
               .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
           },
         )),
       )?;
     }
 
-    webview2_com::wait_with_pump(rx)?.map_err(Into::into)
+    util::wait_with_pump(rx, util::CREATE_TIMEOUT)?.map_err(Into::into)
   }
 
   #[inline]
@@ -376,8 +378,10 @@ impl InnerWebView {
     // by manually creating the callback handler and use webview2_com::with_with_bump
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
       move |error_code, controller| {
-        error_code?;
-        tx.send(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)))
+        // (an error is sent too: returning it instead would leave the wait below with nothing)
+        let controller =
+          error_code.and_then(|()| controller.ok_or_else(|| windows::core::Error::from(E_POINTER)));
+        tx.send(controller)
           .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
       },
     ));
@@ -407,7 +411,7 @@ impl InnerWebView {
       }
     }
 
-    webview2_com::wait_with_pump(rx)?.map_err(Into::into)
+    util::wait_with_pump(rx, util::CREATE_TIMEOUT)?.map_err(Into::into)
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -1618,9 +1622,9 @@ impl InnerWebView {
         // as it uses an mspc::channel under the hood, so we can avoid using two channels
         // by manually creating the callback handler and use webview2_com::with_with_bump
         &GetCookiesCompletedHandler::create(Box::new(move |error_code, cookies| {
-          error_code?;
-
-          let cookies = if let Some(cookies) = cookies {
+          // (an error is sent too: returning it instead would leave the wait below with nothing)
+          let cookies = error_code.and_then(|()| {
+            let Some(cookies) = cookies else { return Ok(Vec::new()) };
             let mut count = 0;
             cookies.Count(&mut count)?;
 
@@ -1634,10 +1638,8 @@ impl InnerWebView {
               }
             }
 
-            out
-          } else {
-            Vec::new()
-          };
+            Ok(out)
+          });
 
           tx.send(cookies)
             .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
@@ -1645,7 +1647,7 @@ impl InnerWebView {
       )?;
     }
 
-    webview2_com::wait_with_pump(rx).map_err(Into::into)
+    util::wait_with_pump(rx, util::CREATE_TIMEOUT)?.map_err(Into::into)
   }
 
   pub fn set_cookie(&self, cookie: &cookie::Cookie<'_>) -> Result<()> {
