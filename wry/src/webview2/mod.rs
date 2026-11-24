@@ -129,12 +129,15 @@ impl InnerWebView {
       attributes.background_color
     };
 
+    // One limit for both, so a WebView2 that never answers can't hold the host for twice as long
+    let deadline = util::create_deadline();
     let env = if let Some(env) = &pl_attrs.environment {
       env.clone()
     } else {
-      Self::create_environment(&attributes, pl_attrs.clone())?
+      Self::create_environment(&attributes, pl_attrs.clone(), deadline)?
     };
-    let controller = Self::create_controller(hwnd, &env, attributes.incognito, background_color)?;
+    let controller =
+      Self::create_controller(hwnd, &env, attributes.incognito, background_color, deadline)?;
     let webview = Self::init_webview(
       parent,
       hwnd,
@@ -282,6 +285,7 @@ impl InnerWebView {
   fn create_environment(
     attributes: &WebViewAttributes,
     pl_attrs: super::PlatformSpecificWebViewAttributes,
+    deadline: std::time::Instant,
   ) -> Result<ICoreWebView2Environment> {
     let data_directory = attributes
       .context
@@ -359,7 +363,7 @@ impl InnerWebView {
       )?;
     }
 
-    util::wait_with_pump(rx, util::CREATE_TIMEOUT)?.map_err(Into::into)
+    util::wait_with_pump(rx, deadline)?.map_err(Into::into)
   }
 
   #[inline]
@@ -368,6 +372,7 @@ impl InnerWebView {
     env: &ICoreWebView2Environment,
     incognito: bool,
     background_color: Option<(u8, u8, u8, u8)>,
+    deadline: std::time::Instant,
   ) -> Result<ICoreWebView2Controller> {
     let (tx, rx) = mpsc::channel();
     let env = env.clone();
@@ -411,7 +416,7 @@ impl InnerWebView {
       }
     }
 
-    util::wait_with_pump(rx, util::CREATE_TIMEOUT)?.map_err(Into::into)
+    util::wait_with_pump(rx, deadline)?.map_err(Into::into)
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -1291,17 +1296,18 @@ impl InnerWebView {
 
   #[inline]
   fn add_script_to_execute_on_document_created(webview: &ICoreWebView2, js: String) -> Result<()> {
-    let webview = webview.clone();
-    AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
-      Box::new(move |handler| unsafe {
-        let js = HSTRING::from(js);
-        webview
-          .AddScriptToExecuteOnDocumentCreated(&js, &handler)
-          .map_err(Into::into)
-      }),
-      Box::new(|e, _| e),
-    )
-    .map_err(Into::into)
+    // (not `wait_for_async_operation`: its wait has no limit, and its callback panics once a wait that gave up is gone)
+    let (tx, rx) = mpsc::channel();
+    let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+      move |error_code, _id| {
+        let _ = tx.send(error_code);
+        Ok(())
+      },
+    ));
+    unsafe {
+      webview.AddScriptToExecuteOnDocumentCreated(&HSTRING::from(js), &handler)?;
+    }
+    util::wait_with_pump(rx, util::create_deadline())?.map_err(Into::into)
   }
 
   #[inline]
@@ -1647,7 +1653,7 @@ impl InnerWebView {
       )?;
     }
 
-    util::wait_with_pump(rx, util::CREATE_TIMEOUT)?.map_err(Into::into)
+    util::wait_with_pump(rx, util::create_deadline())?.map_err(Into::into)
   }
 
   pub fn set_cookie(&self, cookie: &cookie::Cookie<'_>) -> Result<()> {

@@ -100,26 +100,31 @@ pub unsafe fn hwnd_dpi(hwnd: HWND) -> u32 {
   }
 }
 
-/// How long a WebView2 call may take to answer before it's treated as failed.
-pub const CREATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long WebView2 may take to answer before it's treated as failed: a cold start normally takes a few seconds,
+/// and a host may give up on a frozen window not long after this.
+const CREATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// When a WebView2 call started now must have answered by.
+pub fn create_deadline() -> std::time::Instant {
+  std::time::Instant::now() + CREATE_TIMEOUT
+}
 
 /// Pumps this thread's messages until `rx` has a result, like `webview2_com::wait_with_pump`, but stops when the
-/// sender is gone (a callback that ended without sending) or after `timeout`, rather than waiting forever: in a
+/// sender is gone (a callback that ended without sending) or at `deadline`, rather than waiting forever: in a
 /// plugin, a wait that never ends freezes the host.
 pub fn wait_with_pump<T>(
   rx: std::sync::mpsc::Receiver<T>,
-  timeout: std::time::Duration,
+  deadline: std::time::Instant,
 ) -> windows::core::Result<T> {
   use std::sync::mpsc::TryRecvError;
   use windows::Win32::{
-    Foundation::{E_ABORT, ERROR_TIMEOUT},
+    Foundation::{E_ABORT, ERROR_TIMEOUT, WAIT_FAILED},
     UI::WindowsAndMessaging::{
-      DispatchMessageA, MsgWaitForMultipleObjects, PeekMessageA, PostQuitMessage,
-      TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
+      DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage,
+      TranslateMessage, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
     },
   };
 
-  let deadline = std::time::Instant::now() + timeout;
   let mut msg = MSG::default();
   loop {
     match rx.try_recv() {
@@ -132,20 +137,25 @@ pub fn wait_with_pump<T>(
       return Err(ERROR_TIMEOUT.to_hresult().into());
     }
     unsafe {
-      MsgWaitForMultipleObjects(
+      // (MWMO_INPUTAVAILABLE: also wakes for messages already queued but seen by an earlier peek, such as WebView2's
+      // own while it was being called; u32::MAX would mean no limit)
+      let woke = MsgWaitForMultipleObjectsEx(
         None,
-        false,
-        left.as_millis().min(u32::MAX as u128) as u32,
+        left.as_millis().min((u32::MAX - 1) as u128) as u32,
         QS_ALLINPUT,
+        MWMO_INPUTAVAILABLE,
       );
-      while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+      if woke == WAIT_FAILED {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+      }
+      while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
         if msg.message == WM_QUIT {
           // (the host's own quit: put back for its loop to see)
           PostQuitMessage(msg.wParam.0 as i32);
           return Err(E_ABORT.into());
         }
         let _ = TranslateMessage(&msg);
-        DispatchMessageA(&msg);
+        DispatchMessageW(&msg);
       }
     }
   }
